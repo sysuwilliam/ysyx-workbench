@@ -21,20 +21,48 @@ export NEMU_HOME
 VERILATOR ?= verilator
 VFLAGS    ?= -cc --exe -j 0 -Wall
 BUILD_DIR ?= build
-SIM_MSG   ?= sim RTL
 
 OBJ_DIR := $(BUILD_DIR)/obj_dir
 STAMP   := $(BUILD_DIR)/.verilated
 EXE     := $(OBJ_DIR)/V$(TOP)
+
+# ---- NVBoard（可选） ----------------------------------------------------------
+# 只要子项目里有 constr/<TOP>.nxdc，就自动接入 NVBoard：
+#   1) include nvboard.mk，拿到 nvboard.a 的构建规则
+#   2) 用 auto_pin_bind.py 从约束文件生成引脚绑定代码
+#   3) 编译时加 include 路径，链接时加 nvboard.a 与 SDL 库
+NXDC := $(wildcard constr/$(TOP).nxdc)
+ifneq ($(NXDC),)
+  NVBOARD ?= 1
+endif
+
+ifeq ($(NVBOARD),1)
+  NVBOARD_HOME ?= $(WORKBENCH_ROOT)/nvboard
+  export NVBOARD_HOME
+  include $(NVBOARD_HOME)/scripts/nvboard.mk
+
+  AUTO_BIND := $(BUILD_DIR)/auto_bind.cpp
+  $(AUTO_BIND): $(NXDC)
+	@mkdir -p $(dir $@)
+	python3 $(NVBOARD_HOME)/scripts/auto_pin_bind.py $< $@
+  CSRC += $(AUTO_BIND)
+
+  NVBOARD_CFLAGS := -I$(NVBOARD_HOME)/usr/include
+endif
+
+.DEFAULT_GOAL := all
 
 .PHONY: all sim run clean
 
 all: $(EXE)
 
 # 第一段：Verilog 或本 Makefile 变了才重新翻译
-$(STAMP): $(VSRC) Makefile
+$(STAMP): $(VSRC) $(CSRC) $(NXDC) Makefile $(COMMON_MK) $(if $(NVBOARD),$(NVBOARD_ARCHIVE))
 	@mkdir -p $(OBJ_DIR)
-	$(VERILATOR) $(VFLAGS) --top-module $(TOP) --Mdir $(OBJ_DIR) $(CSRC) $(VSRC)
+	$(VERILATOR) $(VFLAGS) --top-module $(TOP) --Mdir $(OBJ_DIR) \
+		$(CSRC) $(VSRC) $(if $(NVBOARD),$(NVBOARD_ARCHIVE)) \
+		$(addprefix -CFLAGS ,$(NVBOARD_CFLAGS)) \
+		$(addprefix -LDFLAGS ,$(LDFLAGS))
 	@touch $@
 
 # 第二段：交给生成的 makefile 编译、链接（CSRC 用绝对路径）
@@ -43,7 +71,7 @@ $(EXE): $(STAMP) $(CSRC)
 	@touch $@
 
 sim: $(EXE)
-	$(call git_commit, "$(SIM_MSG)") # DO NOT REMOVE THIS LINE!!!
+	$(call git_commit, "sim RTL") # DO NOT REMOVE THIS LINE!!!
 	./$(EXE)
 
 run: $(EXE)
