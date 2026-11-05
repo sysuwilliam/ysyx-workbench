@@ -20,6 +20,7 @@ export NEMU_HOME
 
 VERILATOR ?= verilator
 VFLAGS    ?= -cc --exe -j 0 -Wall
+LINTFLAGS ?= --lint-only -Wall
 BUILD_DIR ?= build
 
 OBJ_DIR := $(BUILD_DIR)/obj_dir
@@ -52,7 +53,7 @@ endif
 
 .DEFAULT_GOAL := all
 
-.PHONY: all sim run clean
+.PHONY: all sim run clean lint
 
 all: $(EXE)
 
@@ -76,6 +77,12 @@ sim: $(EXE)
 
 run: $(EXE)
 	./$(EXE)
+
+# ---- lint -------------------------------------------------------------------
+# 只做 Verilog 语法与风格检查，不生成任何文件，也不依赖 NVBoard。
+# 注意：lint 只报告 warning/error，不会进 all 流程；需要时可单独执行。
+lint:
+	$(VERILATOR) $(LINTFLAGS) --top-module $(TOP) $(VSRC)
 
 clean:
 	rm -rf $(BUILD_DIR)
