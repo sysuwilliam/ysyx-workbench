@@ -4,7 +4,7 @@ ifeq ($(TB),test)
   NVBOARD := 0
 endif
 
-TOP       := random
+TOP       := keyboard
 VSRC      := $(abspath $(wildcard vsrc/*.v))
 CSRC      := $(abspath csrc/$(TB).cpp)
 BUILD_DIR := build/$(TB)
