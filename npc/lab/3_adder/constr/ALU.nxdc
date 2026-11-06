@@ -1,0 +1,14 @@
+top=ALU
+
+# 数据输入：SW7..SW4 = A[3:0]，SW3..SW0 = B[3:0]
+A  (SW3, SW2, SW1, SW0)
+B  (SW7, SW6, SW5, SW4)
+
+# 功能选择：BTNU = op[2]，BTNC = op[1]，BTND = op[0]
+op  (BTNU, BTNC, BTND)
+
+# 输出：LD3..LD0 = out[3:0]，LD4 = zero，LD5 = carry，LD6 = overflow
+out  (LD3, LD2, LD1, LD0)
+zero LD4
+carry LD5
+overflow LD6
