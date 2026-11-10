@@ -17,7 +17,7 @@
 //   trace 的 busy 接回 sCPU 的 hold，发送一行期间 CPU 暂停；
 //   一行发送完后按 GAP 等待，再执行下一条指令。
 module sCPU_board #(
-    parameter GAP = 100000
+    parameter GAP = 150000
 ) (
     input  wire       clk,
     input  wire       rst,

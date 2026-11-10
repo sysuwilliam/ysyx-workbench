@@ -13,7 +13,10 @@ vsrc/
 └── debug/        trace（指令跟踪）、uart_tx（8N1 发送）
 csrc/
 ├── main.cpp      NVBoard 主程序
-└── test.cpp      纯 RTL 回归（46 拍检查 GPR/LED/Hex）
+├── test.cpp      纯 RTL 回归（46 拍检查 GPR/LED/Hex）
+├── difftest.cpp  sCPU 与 sEMU 逐条比较 PC 和 GPR
+├── sEMU.cpp      sISA 参考模型（无 main）
+└── sEMU.h        参考模型接口
 constr/
 └── sCPU_board.nxdc  NVBoard 引脚约束
 build/<TB>/       每个 testbench 独立的构建目录，已被忽略
@@ -32,6 +35,7 @@ ROM 里装的是改进后的求和程序：从拨码读入 N，计算 1+2+…+N�
 make                  # 构建 NVBoard 版 sCPU_board，不运行
 make run              # 构建并运行 NVBoard 版
 make TB=test run      # 纯 RTL 回归，不链接 NVBoard、不带 trace
+make TB=difftest run  # sCPU 与 sEMU 逐条 DiffTest
 make TB=test sim      # 回归并提交 tracer
 make lint             # verilator --lint-only -Wall
 make clean
@@ -60,6 +64,15 @@ make clean
   `sCPU_board` 的 `GAP` 参数控制每行之后的空拍数，默认 20000。
   GAP 越小跑得越快；设成 0 时基本按串口发送速度连续输出。
   如果终端上滚得太快看不清，把 GAP 调大即可。
+
+## DiffTest
+
+- `csrc/sEMU.cpp` 是 sISA 的参考模型，`csrc/difftest.cpp` 是测试台。
+- 每个时钟周期：sCPU 执行一条指令，sEMU 也执行一条，然后比较 `PC` 和 `r0~r3`。
+- 第一次不一致时打印第几条指令、PC 的 DUT/REF 值、以及每个不同的寄存器，然后停止。
+- 参考模型的 `io` 输入固定读 `sw`，输出不影响 GPR；程序字节在 `difftest.cpp` 里，
+  和 `vsrc/mid/ROM.v` 保持一致。
+- 注入过两类错误验证：`bner0` 分支条件取反时报 `PC mismatch`；`li` 写回值改错时报 `r1 mismatch`。
 
 ## 约定
 
