@@ -38,18 +38,26 @@
 // 全局处理器状态，头文件里以 extern 声明
 struct minirv_state cpu;
 
+static word_t g_uart_status = 0;
+
+void minirv_set_uart_status(word_t status)
+{
+    g_uart_status = status;
+}
+
 // 复位：清空内存与寄存器，pc 回到 MINIRV_RESET_PC
 void minirv_reset(void)
 {
     memset(&cpu, 0, sizeof(cpu));
     cpu.pc = MINIRV_RESET_PC;
+    g_uart_status = 0;
 }
 
 /*
  * 加载镜像
  *
  * 读入的是裸二进制，不做 ELF 解析，也不区分代码段与数据段，
- * 内容从内存起始地址（0）开始放置，与 minirv 的 pc 初值一致。
+ * 内容从内存偏移 0 开始放置，对应基址 0x80000000，与 minirv 的 pc 初值一致。
  * 先定位到文件末尾取得长度，超过内存容量直接报错，
  * 这样「文件恰好装满内存」和「文件略大」能被区分开。
  * 读取失败、超容量、短读时返回 -1；成功时返回读入的字节数。
@@ -113,13 +121,18 @@ int minirv_load(const char *path)
  */
 static int mem_read32(word_t addr, word_t *val)
 {
-    if (addr > MINIRV_MEM_SIZE - 4) {
+    if (addr == MINIRV_UART_STATUS_ADDR) {
+        *val = g_uart_status;
+        return 0;
+    }
+    if (addr < MINIRV_MEM_BASE || addr - MINIRV_MEM_BASE > MINIRV_MEM_SIZE - 4) {
         return -1;
     }
 
+    word_t off = addr - MINIRV_MEM_BASE;
     word_t v = 0;
     for (int i = 3; i >= 0; i--) {
-        v = (v << 8) | cpu.mem[addr + (word_t)i];
+        v = (v << 8) | cpu.mem[off + (word_t)i];
     }
     *val = v;
     return 0;
@@ -150,12 +163,16 @@ word_t minirv_fetch(word_t addr)
  */
 static int mem_write32(word_t addr, word_t val)
 {
-    if (addr > MINIRV_MEM_SIZE - 4) {
+    if (addr == MINIRV_UART_ADDR) {
+        return 0;
+    }
+    if (addr < MINIRV_MEM_BASE || addr - MINIRV_MEM_BASE > MINIRV_MEM_SIZE - 4) {
         return -1;
     }
 
+    word_t off = addr - MINIRV_MEM_BASE;
     for (int i = 0; i < 4; i++) {
-        cpu.mem[addr + (word_t)i] = (uint8_t)(val >> (8 * i));
+        cpu.mem[off + (word_t)i] = (uint8_t)(val >> (8 * i));
     }
     return 0;
 }
@@ -167,10 +184,13 @@ static int mem_write32(word_t addr, word_t val)
  */
 static int mem_write8(word_t addr, word_t val)
 {
-    if (addr >= MINIRV_MEM_SIZE) {
+    if (addr == MINIRV_UART_ADDR) {
+        return 0;
+    }
+    if (addr < MINIRV_MEM_BASE || addr - MINIRV_MEM_BASE >= MINIRV_MEM_SIZE) {
         return -1;
     }
-    cpu.mem[addr] = (uint8_t)(val & 0xffu);
+    cpu.mem[addr - MINIRV_MEM_BASE] = (uint8_t)(val & 0xffu);
     return 0;
 }
 
@@ -182,10 +202,14 @@ static int mem_write8(word_t addr, word_t val)
  */
 static int mem_read8(word_t addr, word_t *val)
 {
-    if (addr >= MINIRV_MEM_SIZE) {
+    if (addr == MINIRV_UART_STATUS_ADDR) {
+        *val = g_uart_status & 0xffu;
+        return 0;
+    }
+    if (addr < MINIRV_MEM_BASE || addr - MINIRV_MEM_BASE >= MINIRV_MEM_SIZE) {
         return -1;
     }
-    *val = cpu.mem[addr];
+    *val = cpu.mem[addr - MINIRV_MEM_BASE];
     return 0;
 }
 

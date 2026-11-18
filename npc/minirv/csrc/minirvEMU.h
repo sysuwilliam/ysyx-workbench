@@ -12,8 +12,11 @@
 
 #define MINIRV_XLEN      32          // 机器字宽度（位），minirv 固定为 RV32
 #define MINIRV_NR_REGS   16          // GPR 数量，取 RV32E 的 x0..x15
-#define MINIRV_MEM_SIZE  (1u << 16)  // 内存容量（字节），64 KiB
-#define MINIRV_RESET_PC  0x00000000u // 复位后的 PC
+#define MINIRV_UART_ADDR 0x10000000u // UART 数据寄存器
+#define MINIRV_UART_STATUS_ADDR (MINIRV_UART_ADDR + 4u) // UART 状态寄存器
+#define MINIRV_MEM_BASE  0x80000000u // 内存基址
+#define MINIRV_MEM_SIZE  (128u * 1024 * 1024) // 内存容量（字节），128 MiB
+#define MINIRV_RESET_PC  MINIRV_MEM_BASE // 复位后的 PC
 
 // 无符号机器字：地址、寄存器值、取出的指令
 typedef uint32_t word_t;
@@ -30,7 +33,8 @@ static_assert(sizeof(sword_t) * 8 == MINIRV_XLEN, "sword_t must match MINIRV_XLE
  *
  *   pc      当前指令地址，按字节寻址，复位值见 MINIRV_RESET_PC
  *   gpr     通用寄存器 x0..x15；x0 的读恒零、写丢弃属于译码阶段要实现
- *   mem     按字节寻址的内存，指令与数据共用同一空间
+ *   mem     按字节寻址的内存，指令与数据共用同一空间；
+ *           下标是 addr - MINIRV_MEM_BASE
  *   halted  非零表示已停机，由译码函数在满足停机条件时置位
  *   exit_code 结束码：0 表示正常停止，非零表示非法指令或访存越界等错误
  *   steps   已执行指令条数，用于步数上限与运行日志
@@ -50,7 +54,10 @@ extern struct minirv_state cpu;
 // 把全部状态清零，并把 pc 置为 MINIRV_RESET_PC
 void minirv_reset(void);
 
-// 把裸二进制镜像读入内存起始地址，成功返回读入字节数，失败返回 -1
+// 由 DiffTest 注入 UART 状态，保证同一条 load 两边读到相同的值
+void minirv_set_uart_status(word_t status);
+
+// 把裸二进制镜像读入内存偏移 0（对应基址 0x80000000），成功返回字节数，失败返回 -1
 int minirv_load(const char *path);
 
 // 从内存 addr 处取出 32 位指令（小端），越界时置 halted 并返回 0

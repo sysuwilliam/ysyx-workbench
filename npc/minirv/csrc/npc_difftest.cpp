@@ -1,24 +1,18 @@
-// npc_difftest.cpp —— minirv RTL 与 minirvEMU 逐条对拍
+// npc_difftest.cpp —— RTL 与 minirvEMU 逐条对拍
 //
-// 用法
-//   ./Vminirv_top +BIN=<bin> [+STEPS=<n>] [+TRACE]
+// 每个 dbg_exec 拍让 EMU 执行同一条指令；执行前比 pc，执行后比 pc 与
+// 16 个 GPR，结束时比 128 MiB 内存和停机原因。首次不一致打印现场并退出 1。
+// 两边共享同一镜像、基址 0x80000000 与复位 PC。
+// DIFFTEST PASS 只表示两边一致；程序成绩由 ebreak 时的 a0 决定。
 //
-// 存储器在 C++ 里（pmem.h），RTL 通过 DPI-C 的 pmem_read / pmem_write 访问。
-// DUT 与 EMU 各有一份 64 KiB 内存，初值来自同一个镜像。
-//
-// 对拍规则
-//   - 每个时钟周期先看 dbg_exec：为 1 说明这一拍要处理一条指令，
-//     EMU 也执行一条，然后比较执行后的 pc 与全部 16 个 GPR
-//   - 指令执行前先比一次 pc，能抓出取指地址错位
-//   - 结果打印后，再比较两份内存的 64 KiB 内容
-//   - 停机原因也要一致：dbg_halt 对应 exit_code 0，dbg_trap 对应非 0
-//   - 第一次不一致就打印完整现场，退出码 1
+// 运行：./Vminirv_top +BIN=<bin> [+STEPS=<n>] [+TRACE]
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <unistd.h>
 
 #include "Vminirv_top.h"
 #include "verilated.h"
@@ -27,11 +21,16 @@
 #include "pmem.h"
 #include "Vminirv_top__Dpi.h"
 
+static constexpr uint32_t UART_ADDR = 0x10000000u;
+static constexpr uint32_t UART_STATUS_ADDR = 0x10000004u;
+
 static Vminirv_top *top;
 static Pmem g_pmem;
 static const char *g_image = "";
 static bool g_trace = false;
+
 static bool g_dpi_halt = false;
+
 static uint64_t g_mem_writes = 0;
 static bool g_mem_error = false;
 static uint32_t g_mem_error_addr = 0;
@@ -60,24 +59,32 @@ static uint32_t dut_gpr(int i)
     return static_cast<uint32_t>(top->dbg_gpr[i]);
 }
 
+// cpu.mem 是偏移数组，读之前先减基址
 static uint32_t ref_read32(uint32_t addr)
 {
-    uint32_t base = addr & (MINIRV_MEM_SIZE - 1) & ~3u;
+    uint32_t off = (addr - MINIRV_MEM_BASE) & ~3u;
     uint32_t value = 0;
     for (int i = 3; i >= 0; i--)
-        value = (value << 8) | cpu.mem[base + static_cast<uint32_t>(i)];
+        value = (value << 8) | cpu.mem[off + static_cast<uint32_t>(i)];
     return value;
 }
 
+// ebreak 的 DPI 回调
 void npc_ebreak_halt(void)
 {
     g_dpi_halt = true;
     Verilated::gotFinish(true);
 }
 
+// DPI-C：RTL 读内存
 int pmem_read(int raddr)
 {
     uint32_t addr = static_cast<uint32_t>(raddr);
+    if (addr == UART_STATUS_ADDR) {
+        uint32_t status = (std::rand() & 0x7) == 0 ? 1 : 0;
+        minirv_set_uart_status(status);
+        return static_cast<int>(status);
+    }
     if (!g_pmem.has_byte(addr)) {
         g_mem_error = true;
         g_mem_error_addr = addr;
@@ -87,9 +94,37 @@ int pmem_read(int raddr)
     return static_cast<int>(g_pmem.read32(addr));
 }
 
+// UART 字符用青色显示；stderr 不是终端时保持纯文本
+static bool g_uart_color = false;
+
+static void uart_color_reset(void)
+{
+    if (g_uart_color) {
+        std::fputs("\033[0m", stderr);
+        g_uart_color = false;
+    }
+}
+
+static void uart_putc(int ch)
+{
+    bool tty = isatty(fileno(stderr)) != 0;
+    if (tty && !g_uart_color) {
+        std::fputs("\033[1;36m", stderr);
+        g_uart_color = true;
+    }
+    std::fputc(ch, stderr);
+    if (tty && ch == '\n')
+        uart_color_reset();
+}
+
+// DPI-C：RTL 写内存
 void pmem_write(int waddr, int wdata, char wmask)
 {
     uint32_t addr = static_cast<uint32_t>(waddr);
+    if (addr == UART_ADDR) {
+        uart_putc(wdata & 0xff);
+        return;
+    }
     if (!g_pmem.has_byte(addr)) {
         g_mem_error = true;
         g_mem_error_addr = addr;
@@ -150,11 +185,12 @@ static const char *ref_stop(void)
     return (cpu.exit_code == 0) ? "ebreak" : "trap";
 }
 
+// 结束时整片比较；报错地址加回基址
 static bool mem_compare(uint32_t *bad_addr, uint8_t *dut, uint8_t *ref)
 {
     for (uint32_t i = 0; i < MINIRV_MEM_SIZE; i++) {
         if (g_pmem.mem[i] != cpu.mem[i]) {
-            *bad_addr = i;
+            *bad_addr = MINIRV_MEM_BASE + i;
             *dut = g_pmem.mem[i];
             *ref = cpu.mem[i];
             return false;
@@ -170,7 +206,7 @@ static void print_mem_compare(void)
     uint8_t r = 0;
 
     if (mem_compare(&bad, &d, &r)) {
-        std::printf("mem compare : ok (65536 bytes)\n");
+        std::printf("mem compare : ok (128 MiB)\n");
     } else {
         std::printf("mem compare : MISMATCH at 0x%08x dut=0x%02x ref=0x%02x\n",
                     static_cast<unsigned>(bad), d, r);
@@ -208,14 +244,23 @@ static void print_mem_changed(void)
         std::printf("(no writes)\n");
         return;
     }
-    for (const auto &kv : g_written_words)
+    size_t shown = 0;
+    for (const auto &kv : g_written_words) {
+        if (shown == 64) {
+            std::printf("... (%zu more)\n", g_written_words.size() - shown);
+            break;
+        }
         std::printf("mem[0x%08x] = 0x%08x\n",
                     static_cast<unsigned>(kv.first),
                     static_cast<unsigned>(kv.second));
+        shown++;
+    }
 }
 
+// 失败现场：定位、pc 轨迹、停机状态、内存与 GPR
 static void report_fail(uint64_t step, const char *check)
 {
+    uart_color_reset();
     std::printf("\n================ DIFFTEST FAIL ================\n");
     std::printf("image       : %s\n", g_image);
     std::printf("step        : %llu\n", static_cast<unsigned long long>(step));
@@ -246,9 +291,11 @@ static void report_fail(uint64_t step, const char *check)
     std::exit(1);
 }
 
+// DPI 越界失败现场
 static void report_abort(uint64_t step, const char *check, uint32_t pc,
                          uint32_t addr, bool has_addr)
 {
+    uart_color_reset();
     std::printf("\n================ DIFFTEST FAIL ================\n");
     std::printf("image       : %s\n", g_image);
     std::printf("step        : %llu\n", static_cast<unsigned long long>(step));
@@ -265,6 +312,7 @@ static void report_abort(uint64_t step, const char *check, uint32_t pc,
     std::exit(1);
 }
 
+// +TRACE 的每步一行格式
 static void print_trace(uint64_t step, const uint32_t before[16],
                         uint32_t pc_before, uint32_t inst)
 {
@@ -341,7 +389,7 @@ int main(int argc, char **argv)
     std::printf("image       : %s\n", bin);
     std::printf("max steps   : %llu\n",
                 static_cast<unsigned long long>(max_steps));
-    std::printf("memory      : DPI-C pmem_read/pmem_write, 64 KiB\n");
+    std::printf("memory      : DPI-C pmem_read/pmem_write, 128 MiB @ 0x80000000\n");
     std::printf("trace       : %s\n", g_trace ? "on" : "off");
     std::printf("==========================================\n");
 
@@ -360,6 +408,10 @@ int main(int argc, char **argv)
     top->clk = 0;
     top->eval();
 
+    // 复位期间 pc=0 的假读会置位错误，清除
+    g_mem_error = false;
+
+    // 逐拍对拍
     uint64_t steps = 0;
     while (steps < max_steps && !context.gotFinish()) {
         g_write_this_step = false;
@@ -382,7 +434,8 @@ int main(int argc, char **argv)
         g_pc_after_ref = g_pc_before_ref;
 
         g_inst = g_pmem.read32(top->pc);
-        g_ref_inst_valid = (cpu.pc <= MINIRV_MEM_SIZE - 4);
+        g_ref_inst_valid = (cpu.pc >= MINIRV_MEM_BASE &&
+                            cpu.pc - MINIRV_MEM_BASE <= MINIRV_MEM_SIZE - 4);
         g_ref_inst = g_ref_inst_valid ? ref_read32(cpu.pc) : 0;
 
         uint32_t gpr_before[16];
@@ -454,13 +507,23 @@ int main(int argc, char **argv)
     std::printf("stop        : %s\n", reason);
     std::printf("final pc    : dut=0x%08x  ref=0x%08x\n",
                 dut_pc(), static_cast<uint32_t>(cpu.pc));
-    std::printf("exit code   : %d\n", cpu.exit_code);
+    std::printf("ref exit    : %d\n", cpu.exit_code);
+    std::printf("a0          : 0x%08x\n", dut_gpr(10));
     std::printf("mem writes  : %llu\n",
                 static_cast<unsigned long long>(g_mem_writes));
     print_mem_compare();
     std::printf("dpi finish  : %s\n", g_dpi_halt ? "yes" : "no");
     print_gpr_compact();
     print_mem_changed();
+    // DIFFTEST PASS 只表示一致，成绩看 a0
+    if (g_dpi_halt)
+        std::printf("%s\n", dut_gpr(10) == 0 ? "HIT GOOD TRAP" : "HIT BAD TRAP");
     std::printf("================================================\n");
-    return 0;
+
+    // 只有 ebreak 且 a0=0 才算成功
+    if (top->dbg_trap)
+        return 1;
+    if (g_dpi_halt && dut_gpr(10) == 0)
+        return 0;
+    return 1;
 }

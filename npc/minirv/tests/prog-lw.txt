@@ -1,6 +1,0 @@
-# lw 测试：数据放在代码之后的 0x20
-addi a0, zero, 0x20
-lw a1, 0(a0)
-ebreak
-.org 0x20
-.word 0x12345678

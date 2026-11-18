@@ -12,6 +12,7 @@
 !init.sh
 !AGENTS.md
 /nvboard
-/fceux-am
-/riscv-tests
-/am-kernels
+/AM/fceux-am
+/AM/riscv-tests
+/AM/am-kernels
+/archbench

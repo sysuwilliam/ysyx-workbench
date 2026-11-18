@@ -25,7 +25,10 @@ image: image-dep
 	@echo + OBJCOPY "->" $(IMAGE_REL).bin
 	@$(OBJCOPY) -S --set-section-flags .bss=alloc,contents -O binary $(IMAGE).elf $(IMAGE).bin
 
+NPC_HOME ?= $(abspath $(AM_HOME)/../../npc)
+NPC_RUN ?= difftest
+
 run: insert-arg
-	echo "TODO: add command here to run simulation"
+	$(MAKE) -C $(NPC_HOME)/minirv $(NPC_RUN) IMG=$(IMAGE).bin $(if $(STEPS),STEPS=$(STEPS),)
 
 .PHONY: insert-arg

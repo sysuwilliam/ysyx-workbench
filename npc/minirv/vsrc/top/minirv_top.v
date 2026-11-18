@@ -19,7 +19,7 @@ import "DPI-C" function void pmem_write(input int waddr, input int wdata, input 
 //   提交，其余全是组合逻辑。rst 同步高有效，作用于 IFU 与调试标志。
 //
 // 存储器
-//   64 KiB 存储在 C++ 测试台（csrc/pmem.h），本模块通过 DPI-C 访问：
+//   128 MiB、基址 0x80000000 的存储在 C++ 测试台（csrc/pmem.h），本模块通过 DPI-C 访问：
 //   取指调用 pmem_read(pc)，数据读调用 pmem_read(mem_addr)，
 //   store 在时钟沿调用 pmem_write(mem_addr, mem_wdata, mem_be)。
 //   pmem_read 总是返回按 4 字节对齐的字，字节选择由 LSU 完成。

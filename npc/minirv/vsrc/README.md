@@ -2,9 +2,9 @@
 
 E5 的 RTL minirv NPC。单周期执行，指令集为 minirv 的八条指令
 add、addi、lui、lw、lbu、sw、sb、jalr，另用 ebreak 作为程序结束约定。
-pc 初值 0，16 个通用寄存器 x0..x15，机器字 32 位，小端。
+pc 复位值 0x80000000，16 个通用寄存器 x0..x15，机器字 32 位，小端。
 
-存储器不在 RTL 里。64 KiB 存储与访存语义由 C++ 实现（`../csrc/pmem.h`），
+存储器不在 RTL 里。128 MiB、基址 0x80000000 的存储与访存语义由 C++ 实现（`../csrc/pmem.h`），
 RTL 通过 DPI-C 访问：
 
 - `pmem_read(raddr)` 返回 `raddr & ~3` 处的对齐字；
@@ -112,8 +112,8 @@ load 的数据在时钟沿之前就位，store 在沿上写入，下一拍取指
   都按非法指令处理。
 - x0 读恒零、写丢弃；jalr x0 仍然更新 pc。
 - 取指越界与访存越界由 DPI-C 的 `pmem_read`/`pmem_write` 检查，因为内存
-  容量属于 EEI，处理器不知道 64 KiB 的上界。
-- 复位后 pc、全部 GPR、内存均为 0。
+  容量与基址属于 EEI，处理器不知道 128 MiB 的上界。
+- 复位后 pc=0x80000000，全部 GPR 与内存为 0。
 
 ## 命令
 
@@ -127,7 +127,7 @@ make difftest IMG=tests/prog-all.bin TRACE=1 逐条打印轨迹
 ```
 
 `make sim` 结束打印 pc、停机原因、16 个 GPR、内存写次数与改写过的字。
-`make difftest` 每步比较 pc 与全部 GPR，结束时比较两份 64 KiB 内存，
+`make difftest` 每步比较 pc 与全部 GPR，结束时比较两份 64 KiB 内存（difftest 侧尚未适配 128 MiB），
 第一次不一致打印完整现场。
 
 ## 约定

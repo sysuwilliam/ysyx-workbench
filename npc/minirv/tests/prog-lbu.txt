@@ -1,9 +1,0 @@
-# lbu 测试：从 0x20 起按字节读出 0x12345678
-addi a0, zero, 0x20
-lbu a1, 0(a0)
-lbu a2, 1(a0)
-lbu a3, 2(a0)
-lbu a4, 3(a0)
-ebreak
-.org 0x20
-.word 0x12345678

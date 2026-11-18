@@ -25,7 +25,7 @@ module IFU (
     );
 
     // PC 寄存器：trap 或 ebreak 时 stop_now 为 1，PC 保持不动
-    Reg #(.WIDTH(32)) u_PC (
+    Reg #(.WIDTH(32), .RESET_VAL(32'h8000_0000)) u_PC (
         .din(next_pc),
         .dout(pc),
         .wen(~stop_now),

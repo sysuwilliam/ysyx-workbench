@@ -46,7 +46,7 @@ MKIMG     := tools/mkbin.py
 IMG_SRCS  := $(wildcard tests/*.txt)
 IMG_BINS  := $(IMG_SRCS:.txt=.bin)
 
-STEPS     ?= 100000
+STEPS     ?= 100000000
 TRACE     ?= 0
 
 VERILATOR ?= verilator

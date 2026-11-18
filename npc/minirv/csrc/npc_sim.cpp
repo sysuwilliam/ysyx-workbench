@@ -1,32 +1,17 @@
-// npc_sim.cpp —— minirv RTL 的独立仿真入口
+// npc_sim.cpp —— minirv RTL 的独立仿真入口（测试台）
 //
-// 存储器放在 C++ 里（见 pmem.h），RTL 通过 DPI-C 访问：
-//   pmem_read(raddr)                返回 raddr & ~3 处的对齐字
-//   pmem_write(waddr, wdata, wmask) 把 wdata 按字节掩码写入对齐字
-//   取指与数据读都走 pmem_read，store 在时钟沿走 pmem_write。
+// 负责装载镜像、翻转时钟、提供 DPI-C 访存、统计步数与停机原因。
+// 一拍：clk=0 eval（组合取指/读） -> clk=1 eval（提交 PC/GPR/store）。
+// ebreak 通过 DPI 结束仿真；a0=0 打印 HIT GOOD TRAP，否则 HIT BAD TRAP。
 //
-// 顶层端口（模块名 minirv_top，可用 make RTL_TOP=... 覆盖）
-//   input  clk              时钟，本文件手动翻转
-//   input  rst              同步复位，高有效
-//   output [31:0] pc        当前指令地址
-//   output [511:0] dbg_gpr  gpr[i] 位于 dbg_gpr[i*32 +: 32]
-//   output        dbg_exec  本拍处理了一条指令
-//   output        dbg_halt  ebreak 造成的停机，时钟沿后有效
-//   output        dbg_trap  非法指令、未对齐造成的停机，时钟沿后有效
-//
-// 一拍之内的顺序
-//   1. clk=0; eval()         组合逻辑求值，取指与数据读在这里发生
-//   2. clk=1; eval()         上升沿提交，store 在这里通过 pmem_write 落盘
-//   3. 检查 dbg_trap / dbg_halt 与 DPI 的 gotFinish
-//
-// 运行
-//   ./Vminirv_top +BIN=tests/prog-all.bin [+STEPS=n]
+// 运行：./Vminirv_top +BIN=<bin> [+STEPS=<n>]
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <unistd.h>
 
 #include "Vminirv_top.h"
 #include "verilated.h"
@@ -35,10 +20,18 @@
 #include "Vminirv_top__Dpi.h"
 
 static Pmem g_pmem;
+
+static constexpr uint32_t UART_ADDR = 0x10000000u;
+static constexpr uint32_t UART_STATUS_ADDR = 0x10000004u;
+
 static bool g_dpi_halt = false;
+
+// DPI 访存错误：发生、地址、读/写
 static bool g_mem_error = false;
 static uint32_t g_mem_error_addr = 0;
 static bool g_mem_error_write = false;
+
+// store 统计与写过的对齐字
 static uint64_t g_mem_writes = 0;
 static std::map<uint32_t, uint32_t> g_written_words;
 
@@ -55,15 +48,42 @@ static uint32_t gpr_of(const Vminirv_top &top, int i)
     return static_cast<uint32_t>(top.dbg_gpr[i]);
 }
 
+// ebreak 的 DPI 回调
 void npc_ebreak_halt(void)
 {
     g_dpi_halt = true;
     Verilated::gotFinish(true);
 }
 
+// UART 字符用青色显示；stderr 不是终端时保持纯文本
+static bool g_uart_color = false;
+
+static void uart_color_reset(void)
+{
+    if (g_uart_color) {
+        std::fputs("\033[0m", stderr);
+        g_uart_color = false;
+    }
+}
+
+static void uart_putc(int ch)
+{
+    bool tty = isatty(fileno(stderr)) != 0;
+    if (tty && !g_uart_color) {
+        std::fputs("\033[1;36m", stderr);
+        g_uart_color = true;
+    }
+    std::fputc(ch, stderr);
+    if (tty && ch == '\n')
+        uart_color_reset();
+}
+
+// DPI-C：RTL 读内存
 int pmem_read(int raddr)
 {
     uint32_t addr = static_cast<uint32_t>(raddr);
+    if (addr == UART_STATUS_ADDR)
+        return (std::rand() & 0x7) == 0 ? 1 : 0;
     if (!g_pmem.has_byte(addr)) {
         g_mem_error = true;
         g_mem_error_addr = addr;
@@ -73,9 +93,14 @@ int pmem_read(int raddr)
     return static_cast<int>(g_pmem.read32(addr));
 }
 
+// DPI-C：RTL 写内存
 void pmem_write(int waddr, int wdata, char wmask)
 {
     uint32_t addr = static_cast<uint32_t>(waddr);
+    if (addr == UART_ADDR) {
+        uart_putc(wdata & 0xff);
+        return;
+    }
     if (!g_pmem.has_byte(addr)) {
         g_mem_error = true;
         g_mem_error_addr = addr;
@@ -91,6 +116,7 @@ void pmem_write(int waddr, int wdata, char wmask)
 
 static void report_mem_error(void)
 {
+    uart_color_reset();
     std::printf("FAIL: %s out of range at addr=0x%08x\n",
                 g_mem_error_write ? "write" : "read",
                 static_cast<unsigned>(g_mem_error_addr));
@@ -114,6 +140,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // 上电前装载镜像
     g_pmem.reset();
     if (!g_pmem.load(bin))
         return 1;
@@ -124,10 +151,14 @@ int main(int argc, char **argv)
     top.rst = 1;
     tick(top);
     tick(top);
+
     top.rst = 0;
     top.clk = 0;
     top.eval();
+    // 复位期间 pc=0 的假读会置位错误，清除
+    g_mem_error = false;
 
+    // 主循环：每拍处理一条指令
     uint64_t steps = 0;
     while (steps < max_steps && !context.gotFinish()) {
         top.clk = 0;
@@ -138,6 +169,7 @@ int main(int argc, char **argv)
             return 1;
         }
         if (!g_pmem.has_word(top.pc)) {
+            uart_color_reset();
             std::printf("FAIL: fetch out of range at pc=0x%08x\n",
                         static_cast<unsigned>(top.pc));
             return 1;
@@ -156,6 +188,7 @@ int main(int argc, char **argv)
             break;
     }
 
+    uart_color_reset();
     const char *reason = g_dpi_halt ? "ebreak (DPI)"
                        : top.dbg_trap ? "trap"
                        : "step limit";
@@ -164,16 +197,34 @@ int main(int argc, char **argv)
     std::printf("minirv-rtl: stopped by %s at pc=0x%08x after %llu steps\n",
                 reason, static_cast<unsigned>(top.pc),
                 static_cast<unsigned long long>(steps));
+
+    // a0 是程序写下的结束状态
+    if (g_dpi_halt)
+        std::printf("%s\n", gpr_of(top, 10) == 0 ? "HIT GOOD TRAP" : "HIT BAD TRAP");
+
     for (int i = 0; i < 16; i++)
         std::printf("  x%-2d = 0x%08x\n", i, gpr_of(top, i));
+
     std::printf("mem writes = %llu\n",
                 static_cast<unsigned long long>(g_mem_writes));
     if (g_written_words.empty())
         std::printf("  (no writes)\n");
-    for (const auto &kv : g_written_words)
+    size_t shown = 0;
+    for (const auto &kv : g_written_words) {
+        if (shown == 64) {
+            std::printf("  ... (%zu more)\n", g_written_words.size() - shown);
+            break;
+        }
         std::printf("  mem[0x%08x] = 0x%08x\n",
                     static_cast<unsigned>(kv.first),
                     static_cast<unsigned>(kv.second));
+        shown++;
+    }
 
-    return top.dbg_trap ? 1 : 0;
+    // 只有 ebreak 且 a0=0 才算成功
+    if (top.dbg_trap)
+        return 1;
+    if (g_dpi_halt)
+        return gpr_of(top, 10) == 0 ? 0 : 1;
+    return 1;
 }
