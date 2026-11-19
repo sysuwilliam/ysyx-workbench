@@ -23,8 +23,14 @@ static Pmem g_pmem;
 
 static constexpr uint32_t UART_ADDR = 0x10000000u;
 static constexpr uint32_t UART_STATUS_ADDR = 0x10000004u;
+static constexpr uint32_t TIMER_LO_ADDR = 0x20000000u;
+static constexpr uint32_t TIMER_HI_ADDR = 0x20000004u;
+
+// ECC 综合频率 453MHz；改回 100000000ull 可回到 100MHz 假设
+static constexpr uint64_t NPC_FREQ_HZ = 453000000ull;
 
 static bool g_dpi_halt = false;
+static uint64_t g_cycles = 0;
 
 // DPI 访存错误：发生、地址、读/写
 static bool g_mem_error = false;
@@ -34,6 +40,11 @@ static bool g_mem_error_write = false;
 // store 统计与写过的对齐字
 static uint64_t g_mem_writes = 0;
 static std::map<uint32_t, uint32_t> g_written_words;
+
+static uint64_t get_time_us(void)
+{
+    return g_cycles * 1000000ull / NPC_FREQ_HZ;
+}
 
 static void tick(Vminirv_top &top)
 {
@@ -84,6 +95,10 @@ int pmem_read(int raddr)
     uint32_t addr = static_cast<uint32_t>(raddr);
     if (addr == UART_STATUS_ADDR)
         return (std::rand() & 0x7) == 0 ? 1 : 0;
+    if (addr == TIMER_LO_ADDR || addr == TIMER_HI_ADDR) {
+        uint64_t t = get_time_us();
+        return static_cast<int>(addr == TIMER_LO_ADDR ? (t & 0xffffffffu) : (t >> 32));
+    }
     if (!g_pmem.has_byte(addr)) {
         g_mem_error = true;
         g_mem_error_addr = addr;
@@ -184,6 +199,7 @@ int main(int argc, char **argv)
         }
         if (top.dbg_exec)
             steps++;
+        g_cycles++;
         if (top.dbg_trap || (top.dbg_halt && !g_dpi_halt))
             break;
     }

@@ -23,6 +23,11 @@
 
 static constexpr uint32_t UART_ADDR = 0x10000000u;
 static constexpr uint32_t UART_STATUS_ADDR = 0x10000004u;
+static constexpr uint32_t TIMER_LO_ADDR = 0x20000000u;
+static constexpr uint32_t TIMER_HI_ADDR = 0x20000004u;
+
+// ECC 综合频率 453MHz；改回 100000000ull 可回到 100MHz 假设
+static constexpr uint64_t NPC_FREQ_HZ = 453000000ull;
 
 static Vminirv_top *top;
 static Pmem g_pmem;
@@ -30,6 +35,7 @@ static const char *g_image = "";
 static bool g_trace = false;
 
 static bool g_dpi_halt = false;
+static uint64_t g_cycles = 0;
 
 static uint64_t g_mem_writes = 0;
 static bool g_mem_error = false;
@@ -48,6 +54,11 @@ static uint32_t g_pc_before_dut = 0;
 static uint32_t g_pc_before_ref = 0;
 static uint32_t g_pc_after_dut = 0;
 static uint32_t g_pc_after_ref = 0;
+
+static uint64_t get_time_us(void)
+{
+    return g_cycles * 1000000ull / NPC_FREQ_HZ;
+}
 
 static uint32_t dut_pc(void)
 {
@@ -84,6 +95,11 @@ int pmem_read(int raddr)
         uint32_t status = (std::rand() & 0x7) == 0 ? 1 : 0;
         minirv_set_uart_status(status);
         return static_cast<int>(status);
+    }
+    if (addr == TIMER_LO_ADDR || addr == TIMER_HI_ADDR) {
+        uint64_t t = get_time_us();
+        minirv_set_clock(t);
+        return static_cast<int>(addr == TIMER_LO_ADDR ? (t & 0xffffffffu) : (t >> 32));
     }
     if (!g_pmem.has_byte(addr)) {
         g_mem_error = true;
@@ -410,6 +426,7 @@ int main(int argc, char **argv)
 
     // 复位期间 pc=0 的假读会置位错误，清除
     g_mem_error = false;
+    g_cycles = 0;
 
     // 逐拍对拍
     uint64_t steps = 0;
@@ -478,6 +495,7 @@ int main(int argc, char **argv)
         if (top->dbg_halt && !g_dpi_halt)
             report_fail(steps, "ebreak did not notify DPI-C");
 
+        g_cycles++;
         if (top->dbg_halt || top->dbg_trap) {
             if (!cpu.halted)
                 report_fail(steps, "dut stopped, ref still running");

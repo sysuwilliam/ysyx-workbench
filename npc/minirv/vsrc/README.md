@@ -66,6 +66,24 @@ vsrc/
 `pmem_read` 总是返回整字，lw/lbu 的字节选择由 LSU 完成；
 `pmem_write` 的地址会被对齐，`wmask` 每比特对应 `wdata` 的一个字节。
 
+## 综合接口（SYNTHESIS）
+
+ECC/Yosys 综合时定义 `SYNTHESIS`，`minirv_top` 切换为可综合的存储器接口：
+
+| 方向 | 信号 | 含义 |
+|---|---|---|
+| input | `inst_rdata` | 取指读回的对齐字 |
+| input | `data_rdata` | 数据读回的对齐字 |
+| output | `mem_addr` | 数据访存地址 |
+| output | `mem_wdata` | 已移位的写数据 |
+| output | `mem_be` | 字节写使能 |
+| output | `mem_re` | 数据读请求 |
+| output | `mem_we` | 数据写请求 |
+
+`ifndef SYNTHESIS` 包住 DPI-C 的 import 与调用；`ifdef SYNTHESIS` 下
+`inst` 来自 `inst_rdata`，`mem_rdata` 来自 `data_rdata`，ebreak 只冻结 PC，
+不再回调 C++。综合用文件列表在 `~/src/ecc/minirv/rtl/filelist.f`。
+
 ## 模块职责与连线
 
 ```

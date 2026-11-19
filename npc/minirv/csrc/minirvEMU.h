@@ -14,6 +14,8 @@
 #define MINIRV_NR_REGS   16          // GPR 数量，取 RV32E 的 x0..x15
 #define MINIRV_UART_ADDR 0x10000000u // UART 数据寄存器
 #define MINIRV_UART_STATUS_ADDR (MINIRV_UART_ADDR + 4u) // UART 状态寄存器
+#define MINIRV_TIMER_LO_ADDR 0x20000000u // 时钟低 32 位
+#define MINIRV_TIMER_HI_ADDR 0x20000004u // 时钟高 32 位
 #define MINIRV_MEM_BASE  0x80000000u // 内存基址
 #define MINIRV_MEM_SIZE  (128u * 1024 * 1024) // 内存容量（字节），128 MiB
 #define MINIRV_RESET_PC  MINIRV_MEM_BASE // 复位后的 PC
@@ -56,6 +58,9 @@ void minirv_reset(void);
 
 // 由 DiffTest 注入 UART 状态，保证同一条 load 两边读到相同的值
 void minirv_set_uart_status(word_t status);
+
+// 由 DiffTest 注入时钟值，保证同一条 load 两边读到相同的值
+void minirv_set_clock(uint64_t us);
 
 // 把裸二进制镜像读入内存偏移 0（对应基址 0x80000000），成功返回字节数，失败返回 -1
 int minirv_load(const char *path);

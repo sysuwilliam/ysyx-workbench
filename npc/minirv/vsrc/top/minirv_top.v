@@ -1,8 +1,10 @@
 `timescale 1ns/1ns
 
+`ifndef SYNTHESIS
 import "DPI-C" function void npc_ebreak_halt();
 import "DPI-C" function int  pmem_read(input int raddr);
 import "DPI-C" function void pmem_write(input int waddr, input int wdata, input byte wmask);
+`endif
 
 // minirv_top —— 单周期处理器顶层
 //
@@ -31,6 +33,15 @@ module minirv_top (
 
     // ---- 取指地址 ----
     output wire [31:0]  pc,       // 当前指令地址，也是取指地址
+
+    // ---- 综合用存储器接口（仿真时不使用） ----
+    input  wire [31:0]  inst_rdata, // 取指读回的对齐字
+    input  wire [31:0]  data_rdata, // 数据读回的对齐字
+    output wire [31:0]  mem_addr,   // 数据访存地址
+    output wire [31:0]  mem_wdata,  // 写数据（已移位）
+    output wire [3:0]   mem_be,     // 字节写使能
+    output wire         mem_re,     // 数据读请求
+    output wire         mem_we,     // 数据写请求
 
     // ---- 调试端口 ----
     output wire [511:0] dbg_gpr,  // gpr[i] 位于 dbg_gpr[i*32 +: 32]
@@ -97,12 +108,17 @@ module minirv_top (
     assign jump_en  = jump & ~illegal & ~jump_misalign;
     assign rf_wen   = rf_we & ~trap;
 
-    // 取指：通过 DPI-C 从 pmem 读取 pc 处的整字
+    // 取指：仿真走 DPI-C，综合走顶层输入 inst_rdata
+`ifdef SYNTHESIS
+    wire [31:0] inst;
+    assign inst = inst_rdata;
+`else
     reg [31:0] inst;
 
     always @(*) begin
         inst = pmem_read(pc);
     end
+`endif
 
     // 取指：pc 在时钟沿前进一步，跳转时跳到 jump_target；停机时保持不动
     IFU u_ifu (
@@ -198,7 +214,11 @@ module minirv_top (
         .error(lsu_error)
     );
 
-    // 数据读：通过 DPI-C 从 pmem 读取 mem_addr 所在的对齐字
+    // 数据读：仿真走 DPI-C，综合走顶层输入 data_rdata
+`ifdef SYNTHESIS
+    wire [31:0] mem_rdata;
+    assign mem_rdata = data_rdata;
+`else
     reg [31:0] mem_rdata;
 
     always @(*) begin
@@ -207,12 +227,22 @@ module minirv_top (
         else
             mem_rdata = 32'b0;
     end
+`endif
 
-    // 数据写：只在 store 且未对齐检查通过时，于时钟沿写入 pmem
+    // 综合时把访存信号拉到顶层；仿真时这些输出不使用
+    assign mem_addr  = exu_mem_addr;
+    assign mem_wdata = lsu_mem_wdata;
+    assign mem_be    = lsu_mem_be;
+    assign mem_re    = lsu_mem_re;
+    assign mem_we    = lsu_mem_we;
+
+    // 数据写：仿真时只在 store 且对齐检查通过时于时钟沿写入 pmem
+`ifndef SYNTHESIS
     always @(posedge clk) begin
         if (!rst && lsu_mem_we)
             pmem_write(exu_mem_addr, lsu_mem_wdata, {4'b0000, lsu_mem_be});
     end
+`endif
 
     // ---- 调试输出 ----
     // dbg_exec 是组合信号：单周期每拍处理一条，trap 与 ebreak 那一拍也算。
@@ -236,12 +266,19 @@ module minirv_top (
         .clk(clk)
     );
 
+`ifndef SYNTHESIS
     always @(posedge clk) begin
         if (!rst && halt)
             npc_ebreak_halt();
     end
+`endif
 
     // IDU 的字段目前没人用：用一根归约线吃掉，避免 -Wall 报未使用。
     wire unused_fields = &{1'b0, funct3, funct7, rd5, rs1_5, rs2_5};
+
+`ifndef SYNTHESIS
+    // 综合接口在仿真中不驱动，用归约线吃掉，避免 lint 报未使用。
+    wire unused_synth_inputs = &{1'b0, inst_rdata, data_rdata};
+`endif
 
 endmodule

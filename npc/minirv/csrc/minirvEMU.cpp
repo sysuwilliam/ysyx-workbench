@@ -39,10 +39,16 @@
 struct minirv_state cpu;
 
 static word_t g_uart_status = 0;
+static uint64_t g_clock_us = 0;
 
 void minirv_set_uart_status(word_t status)
 {
     g_uart_status = status;
+}
+
+void minirv_set_clock(uint64_t us)
+{
+    g_clock_us = us;
 }
 
 // 复位：清空内存与寄存器，pc 回到 MINIRV_RESET_PC
@@ -51,6 +57,7 @@ void minirv_reset(void)
     memset(&cpu, 0, sizeof(cpu));
     cpu.pc = MINIRV_RESET_PC;
     g_uart_status = 0;
+    g_clock_us = 0;
 }
 
 /*
@@ -123,6 +130,14 @@ static int mem_read32(word_t addr, word_t *val)
 {
     if (addr == MINIRV_UART_STATUS_ADDR) {
         *val = g_uart_status;
+        return 0;
+    }
+    if (addr == MINIRV_TIMER_LO_ADDR) {
+        *val = (word_t)g_clock_us;
+        return 0;
+    }
+    if (addr == MINIRV_TIMER_HI_ADDR) {
+        *val = (word_t)(g_clock_us >> 32);
         return 0;
     }
     if (addr < MINIRV_MEM_BASE || addr - MINIRV_MEM_BASE > MINIRV_MEM_SIZE - 4) {
@@ -204,6 +219,14 @@ static int mem_read8(word_t addr, word_t *val)
 {
     if (addr == MINIRV_UART_STATUS_ADDR) {
         *val = g_uart_status & 0xffu;
+        return 0;
+    }
+    if (addr >= MINIRV_TIMER_LO_ADDR && addr < MINIRV_TIMER_LO_ADDR + 4) {
+        *val = (word_t)((g_clock_us >> (8 * (addr - MINIRV_TIMER_LO_ADDR))) & 0xffu);
+        return 0;
+    }
+    if (addr >= MINIRV_TIMER_HI_ADDR && addr < MINIRV_TIMER_HI_ADDR + 4) {
+        *val = (word_t)((g_clock_us >> (32 + 8 * (addr - MINIRV_TIMER_HI_ADDR))) & 0xffu);
         return 0;
     }
     if (addr < MINIRV_MEM_BASE || addr - MINIRV_MEM_BASE >= MINIRV_MEM_SIZE) {
