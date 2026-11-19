@@ -1,0 +1,23 @@
+# 全指令镜像：addi add lui lw lbu sw sb jalr ebreak
+# 数据区从 0x80 开始，代码到 0x48 结束，不会自覆盖
+
+    lui   a1, 0x12345        # a1 = 0x12345000
+    addi  a1, a1, 0x678      # a1 = 0x12345678
+    addi  a0, x0, 0x80       # a0 = 数据基址
+    sw    a1, 0(a0)          # mem[0x80] = 0x12345678
+    lw    a3, 0(a0)          # a3 = 0x12345678
+    lbu   a4, 1(a0)          # a4 = 0x56
+    addi  a2, x0, 5          # a2 = 5
+    addi  a5, x0, 7          # a5 = 7
+    add   a2, a2, a5         # a2 = 12
+    addi  s1, x0, 0x9a       # s1 = 0x9a
+    sb    s1, 4(a0)          # mem[0x84] = 0x9a
+    lbu   t0, 4(a0)          # t0 = 0x9a
+    addi  s0, x0, 0          # s0 = 0
+    jalr  ra, func           # 调用 func，ra = after
+after:
+    addi  t1, x0, 0x55       # t1 = 0x55
+    ebreak
+func:
+    addi  s0, s0, 42         # s0 = 42
+    jalr  x0, 0(ra)          # 返回 after

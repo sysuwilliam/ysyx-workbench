@@ -1,0 +1,24 @@
+# addi 边界与回绕测试
+# 20 条指令，STEPS=20 停在步数上限；x0 全程必须为 0
+# 每行尾注释是执行后的期望值
+
+addi x1,  x0, 0        # x1  = 0x00000000  立即数为 0
+addi x2,  x0, 2047     # x2  = 0x000007ff  最大正立即数
+addi x3,  x0, -2048    # x3  = 0xfffff800  最小负立即数
+addi x4,  x2, 1        # x4  = 0x00000800  跨过 2047
+addi x5,  x3, -1       # x5  = 0xfffff7ff  -2048 - 1
+addi x6,  x0, -1       # x6  = 0xffffffff  全 1
+addi x7,  x6, 1        # x7  = 0x00000000  回绕到 0
+addi x8,  x6, -1       # x8  = 0xfffffffe
+addi x9,  x8, 2        # x9  = 0x00000000  再回绕一次
+addi x10, x0, 5        # x10 = 0x00000005
+addi x10, x10, 3       # x10 = 0x00000008  rd 与 rs1 相同
+addi x11, x10, -8      # x11 = 0x00000000  相消
+addi x12, x0, 0x7ff    # x12 = 0x000007ff
+addi x13, x12, -0x800  # x13 = 0xffffffff  正负相消
+addi x14, x0, 0x123    # x14 = 0x00000123
+addi x0,  x0, 123      # x0  = 0x00000000  写 x0 被丢弃
+addi x0,  x15, 1       # x0  = 0x00000000  读 x15 的初值 0
+addi x15, x0, -1       # x15 = 0xffffffff  最高合法下标
+addi x14, x14, 0       # x14 = 0x00000123  加 0 不变
+addi x11, x0, 0x40     # x11 = 0x00000040  覆盖前值

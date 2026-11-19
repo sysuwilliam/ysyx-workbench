@@ -1,0 +1,9 @@
+# sw 测试：写入 0x12345678 再用 lw 与 lbu 读回
+lui a1, 0x12345
+addi a1, a1, 0x678
+addi a0, zero, 0x20
+sw a1, 0(a0)
+lw a2, 0(a0)
+lbu a3, 0(a0)
+lbu a4, 3(a0)
+ebreak
