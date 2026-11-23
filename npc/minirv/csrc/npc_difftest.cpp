@@ -436,6 +436,8 @@ int main(int argc, char **argv)
         top->clk = 0;
         top->eval();
 
+        const bool commit_now = top->dbg_exec;
+
         if (g_mem_error) {
             report_abort(steps, g_mem_error_write ? "write out of range"
                                                   : "read out of range",
@@ -459,7 +461,7 @@ int main(int argc, char **argv)
         for (int i = 0; i < 16; i++)
             gpr_before[i] = dut_gpr(i);
 
-        if (top->dbg_exec) {
+        if (commit_now) {
             if (g_pc_before_dut != g_pc_before_ref)
                 report_fail(steps, "pc before exec");
             minirv_exec_once();
@@ -477,7 +479,7 @@ int main(int argc, char **argv)
                          dut_pc(), g_mem_error_addr, true);
         }
 
-        if (top->dbg_exec) {
+        if (commit_now) {
             steps++;
             if (g_pc_after_dut != g_pc_after_ref)
                 report_fail(steps, "pc after exec");

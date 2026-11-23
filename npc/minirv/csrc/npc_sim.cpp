@@ -179,6 +179,8 @@ int main(int argc, char **argv)
         top.clk = 0;
         top.eval();
 
+        const bool commit_now = top.dbg_exec;
+
         if (g_mem_error) {
             report_mem_error();
             return 1;
@@ -197,7 +199,7 @@ int main(int argc, char **argv)
             report_mem_error();
             return 1;
         }
-        if (top.dbg_exec)
+        if (commit_now)
             steps++;
         g_cycles++;
         if (top.dbg_trap || (top.dbg_halt && !g_dpi_halt))
@@ -213,6 +215,11 @@ int main(int argc, char **argv)
     std::printf("minirv-rtl: stopped by %s at pc=0x%08x after %llu steps\n",
                 reason, static_cast<unsigned>(top.pc),
                 static_cast<unsigned long long>(steps));
+
+    std::printf("cycles = %llu, instret = %llu, IPC = %.3f\n",
+                static_cast<unsigned long long>(g_cycles),
+                static_cast<unsigned long long>(steps),
+                static_cast<double>(steps) / static_cast<double>(g_cycles));
 
     // a0 是程序写下的结束状态
     if (g_dpi_halt)

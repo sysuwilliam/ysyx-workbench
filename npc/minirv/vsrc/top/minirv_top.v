@@ -6,26 +6,6 @@ import "DPI-C" function int  pmem_read(input int raddr);
 import "DPI-C" function void pmem_write(input int waddr, input int wdata, input byte wmask);
 `endif
 
-// minirv_top —— 单周期处理器顶层
-//
-// 结构
-//   IFU  ── pc / pc_plus4 ──────────────────────────────> WBU / DPI
-//   IDU  ── 字段、立即数、控制 ──> RegisterFile / EXU / WBU
-//   RF   ── rs1_data / rs2_data ────────────────────────> EXU
-//   EXU  ── alu_result / mem_addr / jump_target ──> WBU / LSU / IFU
-//   LSU  ── load_data / mem_wdata / mem_be ────────────> WBU / DPI
-//   WBU  ── rf_wdata / rf_waddr / rf_we ────────────────> RegisterFile
-//
-// 时钟与复位
-//   只有 IFU 的 PC、RegisterFile 的写口、两个调试标志寄存器在 posedge clk
-//   提交，其余全是组合逻辑。rst 同步高有效，作用于 IFU 与调试标志。
-//
-// 存储器
-//   128 MiB、基址 0x80000000 的存储在 C++ 测试台（csrc/pmem.h），本模块通过 DPI-C 访问：
-//   取指调用 pmem_read(pc)，数据读调用 pmem_read(mem_addr)，
-//   store 在时钟沿调用 pmem_write(mem_addr, mem_wdata, mem_be)。
-//   pmem_read 总是返回按 4 字节对齐的字，字节选择由 LSU 完成。
-
 module minirv_top (
     // ---- 时钟与复位 ----
     input  wire         clk,      // 系统时钟，测试台手动翻转
@@ -102,33 +82,46 @@ module minirv_top (
     wire stop_now;
     wire jump_en;
 
-    assign trap     = illegal | (jump & jump_misalign) | lsu_error;
-    assign halt     = ebreak;
+    assign trap     = exec_valid & (illegal | (jump & jump_misalign) | lsu_error);
+    assign halt     = exec_valid & ebreak;
     assign stop_now = trap | halt;
-    assign jump_en  = jump & ~illegal & ~jump_misalign;
-    assign rf_wen   = rf_we & ~trap;
+    assign jump_en  = exec_valid & jump & ~illegal & ~jump_misalign;
+    assign rf_wen   = rf_we & ~trap & commit_valid;
 
-    // 取指：仿真走 DPI-C，综合走顶层输入 inst_rdata
-`ifdef SYNTHESIS
+    wire [31:0] ifu_raddr;
+    wire [31:0] ifu_rdata;
     wire [31:0] inst;
-    assign inst = inst_rdata;
-`else
-    reg [31:0] inst;
+    wire        exec_valid;
+    wire        commit_valid;
 
-    always @(*) begin
-        inst = pmem_read(pc);
+`ifdef SYNTHESIS
+    assign ifu_rdata = inst_rdata;
+`else
+    reg [31:0] ifu_rdata_r;
+    assign ifu_rdata = ifu_rdata_r;
+
+    always @(posedge clk) begin
+        if (rst)
+            ifu_rdata_r <= 32'b0;
+        else
+            ifu_rdata_r <= pmem_read(ifu_raddr);
     end
 `endif
 
-    // 取指：pc 在时钟沿前进一步，跳转时跳到 jump_target；停机时保持不动
     IFU u_ifu (
         .clk(clk),
         .rst(rst),
         .jump_en(jump_en),
         .jump_target(jump_target),
         .stop_now(stop_now),
+        .ifu_rdata(ifu_rdata),
+        .lsu_re(lsu_mem_re),
         .pc(pc),
-        .pc_plus4(pc_plus4)
+        .pc_plus4(pc_plus4),
+        .ifu_raddr(ifu_raddr),
+        .inst(inst),
+        .exec_valid(exec_valid),
+        .commit_valid(commit_valid)
     );
 
     // 译码：字段拆分、三种立即数、控制信号、非法检查
@@ -216,16 +209,24 @@ module minirv_top (
 
     // 数据读：仿真走 DPI-C，综合走顶层输入 data_rdata
 `ifdef SYNTHESIS
+    wire [31:0] lsu_rdata;
     wire [31:0] mem_rdata;
-    assign mem_rdata = data_rdata;
+    assign lsu_rdata = data_rdata;
+    assign mem_rdata = lsu_rdata;
 `else
-    reg [31:0] mem_rdata;
+    reg [31:0] lsu_rdata_r;
+    wire [31:0] lsu_rdata;
+    wire [31:0] mem_rdata;
+    assign lsu_rdata = lsu_rdata_r;
+    assign mem_rdata = lsu_rdata;
 
-    always @(*) begin
-        if (lsu_mem_re)
-            mem_rdata = pmem_read(exu_mem_addr);
-        else
-            mem_rdata = 32'b0;
+    always @(posedge clk) begin
+        if (rst)
+            lsu_rdata_r <= 32'b0;
+        else if (exec_valid && lsu_mem_re)
+            lsu_rdata_r <= pmem_read(exu_mem_addr);
+        else if (exec_valid && lsu_mem_we)
+            lsu_rdata_r <= 32'b0;
     end
 `endif
 
@@ -233,27 +234,25 @@ module minirv_top (
     assign mem_addr  = exu_mem_addr;
     assign mem_wdata = lsu_mem_wdata;
     assign mem_be    = lsu_mem_be;
-    assign mem_re    = lsu_mem_re;
-    assign mem_we    = lsu_mem_we;
+    assign mem_re    = lsu_mem_re & exec_valid;
+    assign mem_we    = lsu_mem_we & exec_valid;
 
     // 数据写：仿真时只在 store 且对齐检查通过时于时钟沿写入 pmem
 `ifndef SYNTHESIS
     always @(posedge clk) begin
-        if (!rst && lsu_mem_we)
+        if (!rst && exec_valid && lsu_mem_we)
             pmem_write(exu_mem_addr, lsu_mem_wdata, {4'b0000, lsu_mem_be});
     end
 `endif
 
     // ---- 调试输出 ----
-    // dbg_exec 是组合信号：单周期每拍处理一条，trap 与 ebreak 那一拍也算。
-    // 测试台在时钟沿之前读它决定是否与 EMU 对齐步数。
-    assign dbg_exec = 1'b1;
+    assign dbg_exec = commit_valid;
 
     // dbg_halt / dbg_trap 必须是寄存器：测试台在时钟沿之后才读它们判断停机原因。
     Reg #(.WIDTH(1)) u_dbg_halt (
         .din(halt),
         .dout(dbg_halt),
-        .wen(1'b1),
+        .wen(exec_valid),
         .rst(rst),
         .clk(clk)
     );
@@ -261,14 +260,14 @@ module minirv_top (
     Reg #(.WIDTH(1)) u_dbg_trap (
         .din(trap),
         .dout(dbg_trap),
-        .wen(1'b1),
+        .wen(exec_valid),
         .rst(rst),
         .clk(clk)
     );
 
 `ifndef SYNTHESIS
     always @(posedge clk) begin
-        if (!rst && halt)
+        if (!rst && exec_valid && halt)
             npc_ebreak_halt();
     end
 `endif
