@@ -15,13 +15,17 @@ module minirv_top (
     output wire [31:0]  pc,       // 当前指令地址，也是取指地址
 
     // ---- 综合用存储器接口（仿真时不使用） ----
-    input  wire [31:0]  inst_rdata, // 取指读回的对齐字
-    input  wire [31:0]  data_rdata, // 数据读回的对齐字
-    output wire [31:0]  mem_addr,   // 数据访存地址
-    output wire [31:0]  mem_wdata,  // 写数据（已移位）
-    output wire [3:0]   mem_be,     // 字节写使能
-    output wire         mem_re,     // 数据读请求
-    output wire         mem_we,     // 数据写请求
+    input  wire [31:0]  inst_rdata,     // 取指读回的对齐字
+    input  wire         inst_respValid, // 取指响应有效
+    input  wire [31:0]  data_rdata,     // 数据读回的对齐字
+    input  wire         data_respValid, // 数据响应有效
+    output wire         ifu_reqValid,   // 取指请求有效
+    output wire [31:0]  mem_addr,       // 数据访存地址
+    output wire [31:0]  mem_wdata,      // 写数据（已移位）
+    output wire [3:0]   mem_be,         // 字节写使能
+    output wire         mem_re,         // 数据读意图
+    output wire         mem_we,         // 数据写请求
+    output wire         mem_reqValid,   // 数据请求有效
 
     // ---- 调试端口 ----
     output wire [511:0] dbg_gpr,  // gpr[i] 位于 dbg_gpr[i*32 +: 32]
@@ -88,24 +92,21 @@ module minirv_top (
     assign jump_en  = exec_valid & jump & ~illegal & ~jump_misalign;
     assign rf_wen   = rf_we & ~trap & commit_valid;
 
-    wire [31:0] ifu_raddr;
+    wire [31:0] ifu_addr;
     wire [31:0] ifu_rdata;
+    wire        ifu_respValid;
     wire [31:0] inst;
     wire        exec_valid;
     wire        commit_valid;
+    wire        lsu_reqValid;
+    wire [31:0] lsu_rdata;
+    wire        lsu_respValid;
 
 `ifdef SYNTHESIS
-    assign ifu_rdata = inst_rdata;
-`else
-    reg [31:0] ifu_rdata_r;
-    assign ifu_rdata = ifu_rdata_r;
-
-    always @(posedge clk) begin
-        if (rst)
-            ifu_rdata_r <= 32'b0;
-        else
-            ifu_rdata_r <= pmem_read(ifu_raddr);
-    end
+    assign ifu_rdata     = inst_rdata;
+    assign ifu_respValid = inst_respValid;
+    assign lsu_rdata     = data_rdata;
+    assign lsu_respValid = data_respValid;
 `endif
 
     IFU u_ifu (
@@ -115,14 +116,21 @@ module minirv_top (
         .jump_target(jump_target),
         .stop_now(stop_now),
         .ifu_rdata(ifu_rdata),
+        .ifu_respValid(ifu_respValid),
         .lsu_re(lsu_mem_re),
+        .lsu_we(lsu_mem_we),
+        .lsu_respValid(lsu_respValid),
+        .ifu_reqValid(ifu_reqValid),
+        .ifu_addr(ifu_addr),
+        .lsu_reqValid(lsu_reqValid),
         .pc(pc),
         .pc_plus4(pc_plus4),
-        .ifu_raddr(ifu_raddr),
         .inst(inst),
         .exec_valid(exec_valid),
         .commit_valid(commit_valid)
     );
+
+    assign mem_reqValid = lsu_reqValid;
 
     // 译码：字段拆分、三种立即数、控制信号、非法检查
     IDU u_idu (
@@ -207,42 +215,91 @@ module minirv_top (
         .error(lsu_error)
     );
 
-    // 数据读：仿真走 DPI-C，综合走顶层输入 data_rdata
-`ifdef SYNTHESIS
-    wire [31:0] lsu_rdata;
     wire [31:0] mem_rdata;
-    assign lsu_rdata = data_rdata;
-    assign mem_rdata = lsu_rdata;
-`else
-    reg [31:0] lsu_rdata_r;
-    wire [31:0] lsu_rdata;
-    wire [31:0] mem_rdata;
-    assign lsu_rdata = lsu_rdata_r;
     assign mem_rdata = lsu_rdata;
 
-    always @(posedge clk) begin
-        if (rst)
-            lsu_rdata_r <= 32'b0;
-        else if (exec_valid && lsu_mem_re)
-            lsu_rdata_r <= pmem_read(exu_mem_addr);
-        else if (exec_valid && lsu_mem_we)
-            lsu_rdata_r <= 32'b0;
-    end
-`endif
-
-    // 综合时把访存信号拉到顶层；仿真时这些输出不使用
     assign mem_addr  = exu_mem_addr;
     assign mem_wdata = lsu_mem_wdata;
     assign mem_be    = lsu_mem_be;
-    assign mem_re    = lsu_mem_re & exec_valid;
-    assign mem_we    = lsu_mem_we & exec_valid;
+    assign mem_re    = lsu_mem_re;
+    assign mem_we    = lsu_mem_we;
 
-    // 数据写：仿真时只在 store 且对齐检查通过时于时钟沿写入 pmem
 `ifndef SYNTHESIS
+    localparam USE_RANDOM_DELAY = 0;
+    localparam [4:0] FIXED_DELAY = 5'd1;
+
+    reg [7:0] lfsr;
+    wire [7:0] lfsr_next = {lfsr[6:0], lfsr[7] ^ lfsr[5] ^ lfsr[4] ^ lfsr[3]};
     always @(posedge clk) begin
-        if (!rst && exec_valid && lsu_mem_we)
-            pmem_write(exu_mem_addr, lsu_mem_wdata, {4'b0000, lsu_mem_be});
+        if (rst)
+            lfsr <= 8'hA5;
+        else
+            lfsr <= lfsr_next;
     end
+
+    wire [4:0] imem_delay_sel = USE_RANDOM_DELAY ? ({2'b0, lfsr[2:0]} + 5'd1) : FIXED_DELAY;
+    wire [4:0] dmem_delay_sel = USE_RANDOM_DELAY ? ({2'b0, lfsr[5:3]} + 5'd1) : FIXED_DELAY;
+
+    reg [31:0] imem_rdata;
+    reg        imem_resp;
+    reg [4:0]  imem_delay;
+    always @(posedge clk) begin
+        if (rst) begin
+            imem_rdata <= 32'b0;
+            imem_resp  <= 1'b0;
+            imem_delay <= 5'd0;
+        end else begin
+            imem_resp <= 1'b0;
+            if (ifu_reqValid) begin
+                imem_rdata <= pmem_read(ifu_addr);
+                if (imem_delay_sel == 5'd1) begin
+                    imem_resp  <= 1'b1;
+                    imem_delay <= 5'd0;
+                end else begin
+                    imem_resp  <= 1'b0;
+                    imem_delay <= imem_delay_sel - 5'd1;
+                end
+            end else if (imem_delay != 5'd0) begin
+                imem_delay <= imem_delay - 5'd1;
+                if (imem_delay == 5'd1)
+                    imem_resp <= 1'b1;
+            end
+        end
+    end
+    assign ifu_rdata     = imem_rdata;
+    assign ifu_respValid = imem_resp;
+
+    reg [31:0] dmem_rdata;
+    reg        dmem_resp;
+    reg [4:0]  dmem_delay;
+    always @(posedge clk) begin
+        if (rst) begin
+            dmem_rdata <= 32'b0;
+            dmem_resp  <= 1'b0;
+            dmem_delay <= 5'd0;
+        end else begin
+            dmem_resp <= 1'b0;
+            if (lsu_reqValid) begin
+                if (lsu_mem_we)
+                    pmem_write(exu_mem_addr, lsu_mem_wdata, {4'b0000, lsu_mem_be});
+                else
+                    dmem_rdata <= pmem_read(exu_mem_addr);
+                if (dmem_delay_sel == 5'd1) begin
+                    dmem_resp  <= 1'b1;
+                    dmem_delay <= 5'd0;
+                end else begin
+                    dmem_resp  <= 1'b0;
+                    dmem_delay <= dmem_delay_sel - 5'd1;
+                end
+            end else if (dmem_delay != 5'd0) begin
+                dmem_delay <= dmem_delay - 5'd1;
+                if (dmem_delay == 5'd1)
+                    dmem_resp <= 1'b1;
+            end
+        end
+    end
+    assign lsu_rdata     = dmem_rdata;
+    assign lsu_respValid = dmem_resp;
 `endif
 
     // ---- 调试输出 ----
@@ -252,7 +309,7 @@ module minirv_top (
     Reg #(.WIDTH(1)) u_dbg_halt (
         .din(halt),
         .dout(dbg_halt),
-        .wen(exec_valid),
+        .wen(commit_valid),
         .rst(rst),
         .clk(clk)
     );
@@ -260,14 +317,14 @@ module minirv_top (
     Reg #(.WIDTH(1)) u_dbg_trap (
         .din(trap),
         .dout(dbg_trap),
-        .wen(exec_valid),
+        .wen(commit_valid),
         .rst(rst),
         .clk(clk)
     );
 
 `ifndef SYNTHESIS
     always @(posedge clk) begin
-        if (!rst && exec_valid && halt)
+        if (!rst && commit_valid && halt)
             npc_ebreak_halt();
     end
 `endif
@@ -277,7 +334,7 @@ module minirv_top (
 
 `ifndef SYNTHESIS
     // 综合接口在仿真中不驱动，用归约线吃掉，避免 lint 报未使用。
-    wire unused_synth_inputs = &{1'b0, inst_rdata, data_rdata};
+    wire unused_synth_inputs = &{1'b0, inst_rdata, inst_respValid, data_rdata, data_respValid};
 `endif
 
 endmodule

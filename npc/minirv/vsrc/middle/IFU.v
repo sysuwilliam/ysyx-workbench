@@ -7,32 +7,66 @@ module IFU (
     input  wire [31:0] jump_target,
     input  wire        stop_now,
     input  wire [31:0] ifu_rdata,
+    input  wire        ifu_respValid,
     input  wire        lsu_re,
+    input  wire        lsu_we,
+    input  wire        lsu_respValid,
+    output wire        ifu_reqValid,
+    output wire [31:0] ifu_addr,
+    output wire        lsu_reqValid,
     output wire [31:0] pc,
     output wire [31:0] pc_plus4,
-    output wire [31:0] ifu_raddr,
     output wire [31:0] inst,
     output wire        exec_valid,
     output wire        commit_valid
 );
 
-    localparam [1:0] S_IDLE = 2'b00;
-    localparam [1:0] S_WAIT = 2'b01;
-    localparam [1:0] S_LOAD = 2'b10;
+    localparam [1:0] S_IDLE  = 2'b00;
+    localparam [1:0] S_FETCH = 2'b01;
+    localparam [1:0] S_DWAIT = 2'b10;
 
-    wire [1:0] state;
-    reg  [1:0] state_next;
-    wire       lsu_load;
+    wire [1:0]  state;
+    reg  [1:0]  state_next;
+    reg  [31:0] ir;
+    reg         stopped;
 
-    assign lsu_load = (state == S_WAIT) & lsu_re;
+    wire fetch_hit    = (state == S_FETCH) & ifu_respValid;
+    wire mem_op       = lsu_re | lsu_we;
+    wire mem_go       = fetch_hit & mem_op & ~stop_now;
+    wire fetch_commit = fetch_hit & ~mem_go;
+    wire data_commit  = (state == S_DWAIT) & lsu_respValid;
+
+    assign ifu_reqValid = (state == S_IDLE) & ~stopped;
+    assign ifu_addr     = pc;
+    assign exec_valid   = fetch_hit;
+    assign lsu_reqValid = mem_go;
+    assign commit_valid = fetch_commit | data_commit;
+
+    assign inst = (state == S_FETCH) ? (ifu_respValid ? ifu_rdata : 32'h0000_0013)
+                : (state == S_DWAIT) ? ir
+                : 32'h0000_0013;
 
     always @(*) begin
         case (state)
-            S_IDLE: state_next = S_WAIT;
-            S_WAIT: state_next = (lsu_load & ~stop_now) ? S_LOAD : S_IDLE;
-            S_LOAD: state_next = S_IDLE;
+            S_IDLE:  state_next = stopped ? S_IDLE : S_FETCH;
+            S_FETCH: state_next = fetch_hit ? (mem_go ? S_DWAIT : S_IDLE) : S_FETCH;
+            S_DWAIT: state_next = lsu_respValid ? S_IDLE : S_DWAIT;
             default: state_next = S_IDLE;
         endcase
+    end
+
+    always @(posedge clk) begin
+        if (rst)
+            ir <= 32'b0;
+        else if (fetch_hit)
+            ir <= ifu_rdata;
+    end
+
+    always @(posedge clk) begin
+        if (rst)
+            stopped <= 1'b0;
+        else if (fetch_commit && stop_now)
+            stopped <= 1'b1;
     end
 
     Reg #(.WIDTH(2), .RESET_VAL(S_IDLE)) u_state (
@@ -43,11 +77,6 @@ module IFU (
         .clk(clk)
     );
 
-    assign exec_valid   = (state == S_WAIT);
-    assign commit_valid = ((state == S_WAIT) & ~lsu_load) | (state == S_LOAD);
-    assign inst         = (state == S_IDLE) ? 32'h0000_0013 : ifu_rdata;
-    assign ifu_raddr    = pc;
-
     wire [31:0] next_pc;
     wire unused_cout;
 
@@ -57,7 +86,8 @@ module IFU (
         .dout(next_pc)
     );
 
-    wire pc_en = (((state == S_WAIT) & ~lsu_load) | (state == S_LOAD)) & ~stop_now;
+    wire pc_commit = fetch_commit | data_commit;
+    wire pc_en     = pc_commit & ~stop_now;
 
     Reg #(.WIDTH(32), .RESET_VAL(32'h8000_0000)) u_PC (
         .din(next_pc),
