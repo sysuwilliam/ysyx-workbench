@@ -1,6 +1,8 @@
 `timescale 1ns/1ns
 
-module IFU (
+module IFU #(
+    parameter [31:0] RESET_PC = 32'h8000_0000
+) (
     input  wire        clk,
     input  wire        rst,
     input  wire        jump_en,
@@ -89,7 +91,7 @@ module IFU (
     wire pc_commit = fetch_commit | data_commit;
     wire pc_en     = pc_commit & ~stop_now;
 
-    Reg #(.WIDTH(32), .RESET_VAL(32'h8000_0000)) u_PC (
+    Reg #(.WIDTH(32), .RESET_VAL(RESET_PC)) u_PC (
         .din(next_pc),
         .dout(pc),
         .wen(pc_en),
