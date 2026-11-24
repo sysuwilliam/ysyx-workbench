@@ -17,3 +17,5 @@
 /AM/am-kernels
 /archbench
 /ysyxSoC
+!/subrepo-patch/
+!subrepo-patch/**
