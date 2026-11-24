@@ -49,13 +49,17 @@ module minirv_top (
     wire [31:0] imm_u;     // U 型立即数
     wire        gpr_we;    // 这条指令是否要写 rd
     wire [1:0]  alu_op;    // ALU 操作：00 加法，01 直通
-    wire [1:0]  wb_sel;    // 写回来源：00 ALU，01 MEM，10 IMM，11 PC+4
+    wire [2:0]  wb_sel;    // 写回来源：00 ALU，01 MEM，10 IMM，11 PC+4
     wire        idu_mem_re;// 读访存请求
     wire        idu_mem_we;// 写访存请求
     wire [1:0]  mem_size;  // 访存宽度，送 LSU
     wire        jump;      // jalr 的跳转请求
     wire        ebreak;    // ebreak 停机请求
     wire        illegal;   // 非法指令标志
+    wire [11:0] csr_addr;  // CSR 地址
+    wire        csr_we;    // csrrs 是否写 CSR
+    wire [31:0] csr_rdata; // CSR 读数据
+    wire        csr_wen;   // 门控后的 CSR 写使能
 
     // ---- IFU / RegisterFile / EXU / WBU 之间的连线 ----
     wire [31:0] pc_plus4;  // 当前 pc + 4，jalr 的链接值
@@ -150,6 +154,8 @@ module minirv_top (
         .gpr_we(gpr_we),
         .alu_op(alu_op),
         .wb_sel(wb_sel),
+        .csr_addr(csr_addr),
+        .csr_we(csr_we),
         .mem_re(idu_mem_re),
         .mem_we(idu_mem_we),
         .mem_size(mem_size),
@@ -159,6 +165,17 @@ module minirv_top (
     );
 
     // 寄存器堆：两个组合读口 + 一个时钟沿写口，x0 的读与写在内部与 WBU 分别处理
+    assign csr_wen = csr_we & commit_valid & ~trap;
+
+    CSR u_csr (
+        .clk(clk),
+        .rst(rst),
+        .csr_addr(csr_addr),
+        .csr_we(csr_wen),
+        .csr_wdata(rs1_data),
+        .csr_rdata(csr_rdata)
+    );
+
     RegisterFile u_rf (
         .clk(clk),
         .wen(rf_wen),
@@ -192,6 +209,7 @@ module minirv_top (
         .mem_rdata(lsu_load_data),
         .imm_u(imm_u),
         .pc_plus4(pc_plus4),
+        .csr_rdata(csr_rdata),
         .wb_sel(wb_sel),
         .rd(rd),
         .gpr_we(gpr_we),

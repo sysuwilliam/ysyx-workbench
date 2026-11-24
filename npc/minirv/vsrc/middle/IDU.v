@@ -4,7 +4,7 @@
 //
 // 纯组合，无状态。字段拆分、三种立即数、九条指令的控制与合法性检查。
 // 寄存器下标先按 5 位检查，再截成 4 位送寄存器堆。
-// 支持 addi / add / lui / lw / lbu / sw / sb / jalr / ebreak。
+// 支持 addi / add / lui / lw / lbu / sw / sb / jalr / csrrs / ebreak。
 // 控制顺序：先给默认值，再按 opcode 覆盖，最后统一清掉非法指令的副作用。
 
 module IDU (
@@ -33,7 +33,10 @@ module IDU (
     // 控制信号
     output reg         gpr_we,   // 写回时是否写通用寄存器
     output reg  [1:0]  alu_op,   // ALU 操作
-    output reg  [1:0]  wb_sel,   // 写回源选择
+    output reg  [2:0]  wb_sel,   // 写回源选择
+
+    output reg  [11:0] csr_addr, // CSR 地址
+    output reg         csr_we,   // csrrs 是否写 CSR
 
     output reg         mem_re,   // 读存储器
     output reg         mem_we,   // 写存储器
@@ -73,10 +76,11 @@ module IDU (
     localparam [1:0] ALU_PASS = 2'b01;
 
     // 写回来源编码
-    localparam [1:0] WB_ALU = 2'b00;
-    localparam [1:0] WB_MEM = 2'b01;
-    localparam [1:0] WB_IMM = 2'b10;
-    localparam [1:0] WB_PC4 = 2'b11;
+    localparam [2:0] WB_ALU = 3'b000;
+    localparam [2:0] WB_MEM = 3'b001;
+    localparam [2:0] WB_IMM = 3'b010;
+    localparam [2:0] WB_PC4 = 3'b011;
+    localparam [2:0] WB_CSR = 3'b100;
 
     // 访存宽度编码
     localparam [1:0] SIZE_WORD = 2'b00;
@@ -105,6 +109,8 @@ module IDU (
         gpr_we   = 1'b0;
         alu_op   = ALU_ADD;
         wb_sel   = WB_ALU;
+        csr_addr = 12'b0;
+        csr_we   = 1'b0;
         mem_re   = 1'b0;
         mem_we   = 1'b0;
         mem_size = SIZE_WORD;
@@ -198,10 +204,15 @@ module IDU (
             end
         end
 
-        // SYSTEM：只认整字 ebreak，其余 SYSTEM 编码非法
+        // SYSTEM：ebreak 与 csrrs；csrrs rd, csr, x0 即 csrr
         OP_SYSTEM: begin
             if (inst == INSN_EBREAK) begin
                 ebreak = 1'b1;
+            end else if ((funct3 == 3'b010) && !rd5[4] && !rs1_5[4]) begin
+                gpr_we   = 1'b1;
+                wb_sel   = WB_CSR;
+                csr_addr = inst[31:20];
+                csr_we   = (rs1_5 != 5'd0);
             end else begin
                 illegal = 1'b1;
             end
@@ -218,6 +229,7 @@ module IDU (
             mem_we = 1'b0;
             jump   = 1'b0;
             ebreak = 1'b0;
+            csr_we = 1'b0;
         end
     end
 

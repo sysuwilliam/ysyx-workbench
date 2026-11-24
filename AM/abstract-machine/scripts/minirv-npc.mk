@@ -6,8 +6,11 @@ CC = minirv-gcc
 AS = minirv-gcc
 CXX = minirv-g++
 
+NPC_CPU_FREQ ?= 453000000
 COMMON_CFLAGS += -march=rv32e_zicsr -mabi=ilp32e  # overwrite
 LDFLAGS       += -melf32lriscv                    # overwrite
+
+CFLAGS += -DNPC_CPU_FREQ=$(NPC_CPU_FREQ)
 
 AM_SRCS += riscv/npc/libgcc/div.S \
            riscv/npc/libgcc/muldi3.S \

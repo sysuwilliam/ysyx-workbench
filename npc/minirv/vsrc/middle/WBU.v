@@ -10,7 +10,8 @@ module WBU (
     input  wire [31:0] mem_rdata,
     input  wire [31:0] imm_u,
     input  wire [31:0] pc_plus4,
-    input  wire [1:0]  wb_sel,
+    input  wire [31:0] csr_rdata,
+    input  wire [2:0]  wb_sel,
     input  wire [3:0]  rd,
     input  wire        gpr_we,
 
@@ -19,9 +20,9 @@ module WBU (
     output wire        rf_we
 );
 
-    // 写回来源：00 ALU · 01 MEM · 10 IMM · 11 PC+4
-    mux #(.WIDTH(32), .NR_IN(4)) u_wb_sel (
-        .din({pc_plus4, imm_u, mem_rdata, alu_result}),
+    // 写回来源：000 ALU · 001 MEM · 010 IMM · 011 PC+4 · 100 CSR
+    mux #(.WIDTH(32), .NR_IN(8), .SEL_W(3)) u_wb_sel (
+        .din({{3{32'b0}}, csr_rdata, pc_plus4, imm_u, mem_rdata, alu_result}),
         .dout(rf_wdata),
         .sel(wb_sel)
     );

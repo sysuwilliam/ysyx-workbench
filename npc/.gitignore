@@ -14,3 +14,5 @@ build/
 !minirv/tests/*.txt
 !minirv/tests/*.bin
 !minirv/tools/*.py
+
+!minirv/soc/run_color.sh

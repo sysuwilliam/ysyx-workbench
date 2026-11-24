@@ -1,5 +1,9 @@
 `timescale 1ns/1ns
 
+`ifndef SYNTHESIS
+import "DPI-C" function void npc_halt();
+`endif
+
 module ysyx_00000000 (
     input  wire        clock,
     input  wire        reset,
@@ -31,13 +35,17 @@ module ysyx_00000000 (
     wire [31:0] imm_u;
     wire        gpr_we;
     wire [1:0]  alu_op;
-    wire [1:0]  wb_sel;
+    wire [2:0]  wb_sel;
     wire        idu_mem_re;
     wire        idu_mem_we;
     wire [1:0]  mem_size;
     wire        jump;
     wire        ebreak;
     wire        illegal;
+    wire [11:0] csr_addr;
+    wire        csr_we;
+    wire [31:0] csr_rdata;
+    wire        csr_wen;
 
     wire [31:0] pc;
     wire [31:0] pc_plus4;
@@ -112,12 +120,25 @@ module ysyx_00000000 (
         .gpr_we(gpr_we),
         .alu_op(alu_op),
         .wb_sel(wb_sel),
+        .csr_addr(csr_addr),
+        .csr_we(csr_we),
         .mem_re(idu_mem_re),
         .mem_we(idu_mem_we),
         .mem_size(mem_size),
         .jump(jump),
         .ebreak(ebreak),
         .illegal(illegal)
+    );
+
+    assign csr_wen = csr_we & commit_valid & ~trap;
+
+    CSR u_csr (
+        .clk(clock),
+        .rst(reset),
+        .csr_addr(csr_addr),
+        .csr_we(csr_wen),
+        .csr_wdata(rs1_data),
+        .csr_rdata(csr_rdata)
     );
 
     RegisterFile u_rf (
@@ -151,6 +172,7 @@ module ysyx_00000000 (
         .mem_rdata(lsu_load_data),
         .imm_u(imm_u),
         .pc_plus4(pc_plus4),
+        .csr_rdata(csr_rdata),
         .wb_sel(wb_sel),
         .rd(rd),
         .gpr_we(gpr_we),
@@ -182,5 +204,68 @@ module ysyx_00000000 (
 
     wire unused_fields = &{1'b0, funct3, funct7, rd5, rs1_5, rs2_5};
     wire unused_gpr = &{1'b0, dbg_gpr};
+
+`ifndef SYNTHESIS
+    wire [31:0] dbg_a0 = dbg_gpr[351:320];
+    reg [63:0] dbg_instret;
+    reg [63:0] dbg_cycles;
+    reg [63:0] dbg_prog_instret;
+    reg [63:0] dbg_prog_cycles;
+    reg        dbg_started;
+    always @(posedge clock) begin
+        if (reset) begin
+            dbg_instret      <= 64'd0;
+            dbg_cycles       <= 64'd0;
+            dbg_prog_instret <= 64'd0;
+            dbg_prog_cycles  <= 64'd0;
+            dbg_started      <= 1'b0;
+        end else begin
+            dbg_cycles <= dbg_cycles + 64'd1;
+            if (commit_valid)
+                dbg_instret <= dbg_instret + 64'd1;
+            if (!dbg_started && pc[31]) begin
+                dbg_started      <= 1'b1;
+                dbg_prog_instret <= 64'd0;
+                dbg_prog_cycles  <= 64'd0;
+            end else if (dbg_started) begin
+                dbg_prog_cycles <= dbg_prog_cycles + 64'd1;
+                if (commit_valid)
+                    dbg_prog_instret <= dbg_prog_instret + 64'd1;
+            end
+        end
+    end
+    always @(posedge clock) begin
+        if (!reset && commit_valid && halt) begin
+            $display("%s", dbg_a0 == 32'b0 ? "HIT GOOD TRAP" : "HIT BAD TRAP");
+            $display("SoC IPC: instret=%0d cycles=%0d IPC=%0d.%03d",
+                     dbg_instret, dbg_cycles,
+                     ((dbg_instret * 1000) / dbg_cycles) / 1000,
+                     ((dbg_instret * 1000) / dbg_cycles) % 1000);
+            if (dbg_prog_cycles != 0)
+                $display("SoC program IPC: instret=%0d cycles=%0d IPC=%0d.%03d",
+                         dbg_prog_instret, dbg_prog_cycles,
+                         ((dbg_prog_instret * 1000) / dbg_prog_cycles) / 1000,
+                         ((dbg_prog_instret * 1000) / dbg_prog_cycles) % 1000);
+            npc_halt();
+        end
+        if (!reset && commit_valid && trap) begin
+            $display("TRAP pc=%08x", pc);
+            npc_halt();
+        end
+    end
+`endif
+
+`ifdef YSYX_DEBUG
+    reg [31:0] dbg_count;
+    always @(posedge clock) begin
+        if (reset)
+            dbg_count <= 32'b0;
+        else if (commit_valid) begin
+            dbg_count <= dbg_count + 32'd1;
+            if (dbg_count < 64 || (dbg_count % 1000 == 0))
+                $fwrite(32'h80000002, "DBG pc=%08x inst=%08x n=%0d\n", pc, inst, dbg_count);
+        end
+    end
+`endif
 
 endmodule
